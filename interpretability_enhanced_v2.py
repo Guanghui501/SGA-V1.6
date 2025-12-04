@@ -9,6 +9,7 @@
 5. 物理化学特征关联分析
 6. 预测置信度与不确定性估计
 7. 批量可解释性报告生成
+8. 符号回归分析（从神经网络特征中发现可解释的数学公式）
 
 作者: Enhanced Interpretability Module v2
 """
@@ -1283,7 +1284,254 @@ class ComprehensiveExplainer:
         
         with open(save_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
-            
+
+    def extract_symbolic_features(self, test_loader, save_dir=None, max_samples=None):
+        """
+        提取特征用于符号回归分析
+
+        使用PySR库从模型特征中发现可解释的符号公式，将深度学习模型的
+        黑盒预测转化为可理解的数学表达式。
+
+        Args:
+            test_loader: 测试数据加载器
+            save_dir: 保存目录（可选）
+            max_samples: 最大样本数（None表示使用所有样本）
+
+        Returns:
+            model_sr: 训练好的PySR回归器
+            results: 包含公式和评估指标的字典
+        """
+        try:
+            import pysr
+        except ImportError:
+            print("⚠️ PySR未安装。请运行: pip install pysr")
+            print("   注意: PySR需要Julia环境。详见: https://github.com/MilesCranmer/PySR")
+            return None, None
+
+        print("\n" + "="*80)
+        print("🔬 符号回归分析 - 从神经网络特征中发现数学公式")
+        print("="*80)
+
+        all_features = []
+        all_targets = []
+        all_predictions = []
+
+        print("\n📊 [1/3] 提取模型特征...")
+
+        self.model.eval()
+        sample_count = 0
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="提取特征"):
+                if max_samples is not None and sample_count >= max_samples:
+                    break
+
+                g, lg, text, target = batch
+
+                # 前向传播，获取特征
+                output = self.model(
+                    [g.to(self.device), lg.to(self.device), text],
+                    return_features=True
+                )
+
+                # 提取图特征（最具代表性的结构特征）
+                if isinstance(output, dict):
+                    # 优先使用融合后的图特征
+                    if 'graph_features' in output and output['graph_features'] is not None:
+                        features = output['graph_features'].cpu().numpy()
+                    elif 'graph_cross' in output and output['graph_cross'] is not None:
+                        features = output['graph_cross'].cpu().numpy()
+                    else:
+                        print("⚠️ 未找到图特征，跳过此批次")
+                        continue
+
+                    # 获取预测
+                    pred = output['predictions'].cpu().numpy()
+                else:
+                    print("⚠️ 模型输出格式不支持特征提取")
+                    continue
+
+                all_features.append(features)
+                all_targets.append(target.numpy())
+                all_predictions.append(pred)
+                sample_count += len(target)
+
+        if len(all_features) == 0:
+            print("❌ 未提取到任何特征！")
+            return None, None
+
+        # 合并所有批次
+        X = np.vstack(all_features)
+        y = np.concatenate(all_targets)
+        y_pred_nn = np.concatenate(all_predictions)
+
+        print(f"   ✓ 提取了 {len(y)} 个样本")
+        print(f"   ✓ 特征维度: {X.shape[1]}")
+
+        # ==================== 符号回归 ====================
+        print("\n🧮 [2/3] 运行符号回归...")
+        print("   这可能需要几分钟时间，请耐心等待...")
+
+        # 配置PySR
+        model_sr = pysr.PySRRegressor(
+            niterations=100,  # 迭代次数
+            binary_operators=["+", "-", "*", "/", "^"],  # 二元运算符
+            unary_operators=[
+                "exp",   # 指数
+                "log",   # 对数
+                "sqrt",  # 平方根
+                "abs",   # 绝对值
+            ],
+            maxsize=20,  # 最大公式复杂度
+            populations=15,  # 种群数量
+            population_size=33,  # 每个种群的大小
+            ncyclesperiteration=550,  # 每次迭代的循环数
+            # 损失函数：平衡准确性和复杂度
+            parsimony=0.0032,  # 简洁性惩罚
+            # 特征选择
+            select_k_features=min(10, X.shape[1]),  # 自动选择最重要的k个特征
+            # 输出设置
+            verbosity=1,  # 显示进度
+            progress=True,  # 显示进度条
+            # 性能优化
+            turbo=True,  # 加速模式
+            precision=32,  # 使用32位精度
+        )
+
+        # 拟合符号回归模型
+        try:
+            model_sr.fit(X, y)
+
+            print("\n" + "="*80)
+            print("📝 发现的符号公式:")
+            print("="*80)
+
+            # 获取最佳公式
+            equations = model_sr.equations_
+
+            # 显示前5个最佳公式
+            print("\n前5个候选公式（按复杂度-准确度权衡排序）:")
+            print("-"*80)
+
+            for i, row in equations.head(5).iterrows():
+                print(f"\n公式 {i+1}:")
+                print(f"  表达式: {row['equation']}")
+                print(f"  复杂度: {row['complexity']}")
+                print(f"  损失: {row['loss']:.6f}")
+                if 'score' in row:
+                    print(f"  评分: {row['score']:.6f}")
+
+            # 使用sympy显示最佳公式
+            print("\n" + "="*80)
+            print("🎯 最佳公式 (SymPy格式):")
+            print("="*80)
+            try:
+                best_formula = model_sr.sympy()
+                print(f"\n{best_formula}\n")
+            except Exception as e:
+                print(f"⚠️ 无法转换为SymPy格式: {e}")
+
+            # ==================== 评估符号回归模型 ====================
+            print("\n📊 [3/3] 评估符号回归模型...")
+
+            # 使用符号回归模型预测
+            y_pred_sr = model_sr.predict(X)
+
+            # 计算指标
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+            mae = mean_absolute_error(y, y_pred_sr)
+            mse = mean_squared_error(y, y_pred_sr)
+            rmse = np.sqrt(mse)
+            r2 = r2_score(y, y_pred_sr)
+
+            # 与神经网络比较
+            mae_nn = mean_absolute_error(y, y_pred_nn)
+            r2_nn = r2_score(y, y_pred_nn)
+
+            print("\n符号回归模型性能:")
+            print(f"  MAE:  {mae:.4f}")
+            print(f"  RMSE: {rmse:.4f}")
+            print(f"  R²:   {r2:.4f}")
+
+            print("\n与神经网络对比:")
+            print(f"  神经网络 MAE: {mae_nn:.4f}")
+            print(f"  神经网络 R²:  {r2_nn:.4f}")
+            print(f"  MAE 比率:     {mae/mae_nn:.2%} (越小越好)")
+            print(f"  R² 差距:      {r2 - r2_nn:+.4f}")
+
+            # 组装结果
+            results = {
+                'best_formula': str(best_formula) if 'best_formula' in locals() else None,
+                'equations_df': equations.to_dict('records') if equations is not None else None,
+                'metrics': {
+                    'mae': float(mae),
+                    'rmse': float(rmse),
+                    'r2': float(r2),
+                },
+                'nn_comparison': {
+                    'mae_nn': float(mae_nn),
+                    'r2_nn': float(r2_nn),
+                    'mae_ratio': float(mae/mae_nn),
+                    'r2_diff': float(r2 - r2_nn),
+                },
+                'feature_dim': int(X.shape[1]),
+                'num_samples': int(len(y)),
+            }
+
+            # ==================== 保存结果 ====================
+            if save_dir:
+                save_dir = Path(save_dir)
+                save_dir.mkdir(parents=True, exist_ok=True)
+
+                # 保存公式
+                formula_path = save_dir / 'symbolic_regression_formulas.txt'
+                with open(formula_path, 'w') as f:
+                    f.write("="*80 + "\n")
+                    f.write("符号回归发现的公式\n")
+                    f.write("="*80 + "\n\n")
+
+                    if 'best_formula' in locals():
+                        f.write(f"最佳公式:\n{best_formula}\n\n")
+
+                    f.write("所有候选公式:\n")
+                    f.write("-"*80 + "\n")
+                    for i, row in equations.iterrows():
+                        f.write(f"\n公式 {i+1}:\n")
+                        f.write(f"  {row['equation']}\n")
+                        f.write(f"  复杂度: {row['complexity']}, 损失: {row['loss']:.6f}\n")
+
+                print(f"\n   ✓ 公式已保存: {formula_path}")
+
+                # 保存详细结果
+                results_path = save_dir / 'symbolic_regression_results.json'
+                with open(results_path, 'w') as f:
+                    json.dump(results, f, indent=2, default=str)
+
+                print(f"   ✓ 结果已保存: {results_path}")
+
+                # 保存模型
+                try:
+                    model_path = save_dir / 'symbolic_regression_model.pkl'
+                    import pickle
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(model_sr, f)
+                    print(f"   ✓ 模型已保存: {model_path}")
+                except Exception as e:
+                    print(f"   ⚠️ 模型保存失败: {e}")
+
+            print("\n" + "="*80)
+            print("✅ 符号回归分析完成!")
+            print("="*80 + "\n")
+
+            return model_sr, results
+
+        except Exception as e:
+            print(f"\n❌ 符号回归失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+
     def batch_explain(self, data_loader, atoms_list, save_dir, max_samples=50):
         """
         批量解释
@@ -1384,7 +1632,23 @@ def demo_usage():
     ## 不确定性估计
     uncertainty = UncertaintyEstimator(model)
     mean, std, samples = uncertainty.mc_dropout_uncertainty(g, lg, text)
-    
+
+    ## 符号回归分析 (新功能!)
+    # 从神经网络特征中发现可解释的数学公式
+    model_sr, results = explainer.extract_symbolic_features(
+        test_loader=test_loader,
+        save_dir='./symbolic_regression',
+        max_samples=500  # 可选：限制样本数以加快速度
+    )
+
+    # 使用发现的符号公式进行预测
+    if model_sr is not None:
+        # 提取新样本的特征
+        new_features = model.get_features(new_g, new_lg, new_text)
+        # 使用符号公式预测
+        symbolic_prediction = model_sr.predict(new_features)
+        print(f"符号公式预测: {symbolic_prediction}")
+
     =========================================================
     """)
 
