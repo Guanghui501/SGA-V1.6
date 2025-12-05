@@ -187,14 +187,14 @@ def analyze_with_fine_grained_attention(
         save_path = save_dir / 'fine_grained_attention.png'
     else:
         save_path = 'fine_grained_attention.png'
-
+    num_tokens = len(tokens)
     analysis = analyzer.visualize_fine_grained_attention(
         attention_weights=fg_attn,
         atoms_object=atoms_object,
         text_tokens=tokens,
         save_path=save_path,
         top_k_atoms=10,
-        top_k_words=15,
+        top_k_words=num_tokens,
         show_all_heads=False
     )
 
