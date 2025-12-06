@@ -1,0 +1,6 @@
+id,target,text_description,composition
+sample_001,-3.456,Stable cubic perovskite with high symmetry,CaTiO3
+sample_002,-2.123,Layered oxide with good ionic conductivity,Li2MnO3
+sample_003,-4.789,Rock salt structure with high formation energy,MgO
+sample_004,-1.234,Spinel structure with mixed oxidation states,Fe3O4
+sample_005,-3.890,Wurtzite semiconductor with direct bandgap,GaN
