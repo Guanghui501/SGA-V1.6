@@ -1,42 +1,53 @@
 #!/usr/bin/env python
 """
 本地数据训练脚本 - 使用CIF文件 + CSV描述
+（照抄 train_with_cross_modal_attention.py 的数据集处理方式）
 
-数据格式：
-    - CIF目录: 包含所有晶体结构CIF文件
-    - CSV文件: 包含样本ID、目标值、文本描述等信息
+支持的数据集:
+    - jarvis: JARVIS-DFT 数据集
+    - mp: Material Project 数据集
+    - class: 分类数据集
+    - toy: 玩具数据集（测试用）
+    - custom: 自定义数据集
 
-CSV格式要求：
-    必需列:
-    - id: 样本ID（对应CIF文件名，如 sample_001.cif 的ID为 sample_001）
-    - target: 目标属性值（浮点数）
-
-    可选列:
-    - text_description: 材料文本描述（用于多模态学习）
-    - composition: 化学式（可选）
+CSV格式（按数据集类型）:
+    JARVIS/TOY: Id, Composition, prop, Description, File_Name
+    MP:         id, composition, formation_energy, band_gap, description, file_name
+    Class:      id, target, description
+    Custom:     由 --target_column, --text_column, --id_column 参数指定
 
 使用示例:
-    # 基础训练
+    # 1. JARVIS 数据集
     python train_local_cif_csv.py \\
+        --root_dir ../dataset/ \\
+        --dataset jarvis \\
+        --property formation_energy \\
+        --model densegnn \\
+        --use_middle_fusion
+
+    # 2. Material Project 数据集
+    python train_local_cif_csv.py \\
+        --root_dir ../dataset/ \\
+        --dataset mp \\
+        --property band_gap \\
+        --model densegnn \\
+        --use_cross_modal
+
+    # 3. 自定义数据集（与之前一样）
+    python train_local_cif_csv.py \\
+        --dataset custom \\
         --cif_dir ./my_structures/cif/ \\
         --csv_file ./my_structures/data.csv \\
-        --output_dir ./results/
-
-    # 使用 DenseGNN + 多模态
-    python train_local_cif_csv.py \\
-        --cif_dir ./structures/ \\
-        --csv_file ./data.csv \\
         --model densegnn \\
         --use_middle_fusion \\
-        --use_cross_modal \\
-        --epochs 500
+        --use_cross_modal
 
-    # 分类任务
+    # 4. 分类任务
     python train_local_cif_csv.py \\
-        --cif_dir ./cifs/ \\
-        --csv_file ./labels.csv \\
+        --dataset class \\
+        --property syn \\
         --classification \\
-        --target_column label
+        --num_classes 2
 """
 
 import os
@@ -117,10 +128,75 @@ def setup_text_normalizer():
     return normalize
 
 
+# ==================== 数据集路径配置（照抄 train_with_cross_modal_attention.py）====================
+
+def get_dataset_paths(root_dir, dataset, property_name):
+    """根据数据集和性质获取数据路径
+
+    Args:
+        root_dir: 数据集根目录
+        dataset: 数据集名称 (jarvis, mp, class, toy, custom)
+        property_name: 属性名称
+
+    Returns:
+        cif_dir, csv_file: CIF目录路径和CSV文件路径
+    """
+    if dataset.lower() == 'jarvis':
+        # JARVIS-DFT 数据集
+        property_map = {
+            'formation_energy': 'formation_energy_peratom',
+            'fe': 'formation_energy_peratom',
+            'total_energy': 'optb88vdw_total_energy',
+            'opt_bandgap': 'optb88vdw_bandgap',
+            'mbj_bandgap': 'mbj_bandgap',
+            'bulk_modulus': 'bulk_modulus_kv',
+            'bulk_modulus_kv': 'bulk_modulus_kv',
+            'shear_modulus': 'shear_modulus_gv',
+            'shear_modulus_gv': 'shear_modulus_gv',
+        }
+
+        prop_folder = property_map.get(property_name, property_name)
+        cif_dir = os.path.join(root_dir, f'jarvis/{prop_folder}/cif/')
+        csv_file = os.path.join(root_dir, f'jarvis/{prop_folder}/description.csv')
+
+    elif dataset.lower() == 'mp':
+        # Material Project 数据集
+        if property_name in ['formation_energy', 'band_gap']:
+            cif_dir = os.path.join(root_dir, 'mp_2018_new/')
+            csv_file = os.path.join(root_dir, 'mp_2018_new/mat_text.csv')
+        elif property_name in ['bulk', 'shear', 'bulk_modulus', 'shear_modulus']:
+            cif_dir = os.path.join(root_dir, 'mp_2018_small/cif/')
+            csv_file = os.path.join(root_dir, 'mp_2018_small/description.csv')
+        else:
+            raise ValueError(f"Unsupported property for MP dataset: {property_name}")
+
+    elif dataset.lower() == 'class':
+        # 分类数据集（类似jarvis结构）
+        # 例如：class/syn, class/metal_oxide, 等
+        cif_dir = os.path.join(root_dir, f'class/{property_name}/cif/')
+        csv_file = os.path.join(root_dir, f'class/{property_name}/description.csv')
+
+    elif dataset.lower() == 'toy':
+        # 玩具数据集（用于测试）
+        cif_dir = os.path.join(root_dir, 'toy/cif/')
+        csv_file = os.path.join(root_dir, 'toy/description.csv')
+
+    elif dataset.lower() == 'custom':
+        # 自定义数据集：由命令行参数指定
+        # 这种情况下，cif_dir 和 csv_file 会在 main() 中直接使用参数值
+        return None, None
+
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset}")
+
+    return cif_dir, csv_file
+
+
 # ==================== 数据加载 ====================
 
-def load_dataset_from_cif_csv(cif_dir, csv_file, target_column='target',
-                               text_column='text_description', id_column='id'):
+def load_dataset_from_cif_csv(cif_dir, csv_file, dataset='custom', property_name='formation_energy',
+                               target_column='target', text_column='text_description',
+                               id_column='id'):
     """从CIF目录和CSV文件加载数据集
 
     Args:
@@ -148,25 +224,18 @@ def load_dataset_from_cif_csv(cif_dir, csv_file, target_column='target',
     if not os.path.exists(csv_file):
         raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
 
-    # 读取CSV文件
+    # 读取CSV文件（照抄 train_with_cross_modal_attention.py 的方式）
     with open(csv_file, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+        reader = csv.reader(f)
+        headings = next(reader)
+        data = [row for row in reader]
 
-    print(f"CSV文件共 {len(rows)} 行")
+    print(f"CSV文件共 {len(data)} 行")
+    print(f"CSV列名: {headings}")
 
     # 检查必需列
-    if len(rows) == 0:
+    if len(data) == 0:
         raise ValueError("CSV文件为空")
-
-    columns = rows[0].keys()
-    if id_column not in columns:
-        raise ValueError(f"CSV缺少ID列: {id_column}。可用列: {list(columns)}")
-    if target_column not in columns:
-        raise ValueError(f"CSV缺少目标列: {target_column}。可用列: {list(columns)}")
-
-    has_text = text_column in columns
-    print(f"文本描述: {'✓ 包含' if has_text else '✗ 不包含'}")
 
     # 设置文本归一化器
     normalize_text = setup_text_normalizer()
@@ -176,16 +245,44 @@ def load_dataset_from_cif_csv(cif_dir, csv_file, target_column='target',
     skipped = 0
     errors = []
 
-    for row in tqdm(rows, desc="加载样本"):
+    for j in tqdm(range(len(data)), desc="加载样本"):
         try:
-            sample_id = row[id_column].strip()
-            target_value = float(row[target_column])
+            # 根据不同数据集解析CSV行（照抄 train_with_cross_modal_attention.py）
+            if dataset.lower() == 'mp':
+                if property_name == 'formation_energy':
+                    sample_id, composition, target_value, _, crys_desc_full, _ = data[j]
+                elif property_name == 'band_gap':
+                    sample_id, composition, _, target_value, crys_desc_full, _ = data[j]
+                elif property_name == 'shear':
+                    sample_id, composition, target_value, _, crys_desc_full, _ = data[j]
+                elif property_name in ['bulk', 'bulk_modulus']:
+                    sample_id, composition, _, target_value, crys_desc_full, _ = data[j]
+                else:
+                    sample_id, composition, target_value, _, crys_desc_full, _ = data[j]
 
-            # 文本描述
-            if has_text and row.get(text_column):
-                text_desc = normalize_text(row[text_column])
+            elif dataset.lower() == 'jarvis':
+                # JARVIS格式: Id, Composition, prop, Description, File_Name
+                sample_id, composition, target_value, crys_desc_full, _ = data[j]
+
+            elif dataset.lower() == 'class':
+                # 分类数据集格式: id, target, description
+                sample_id, target_value, crys_desc_full = data[j]
+                composition = ''  # 分类任务不需要composition
+
+            elif dataset.lower() == 'toy':
+                sample_id, composition, target_value, crys_desc_full, _ = data[j]
+
+            elif dataset.lower() == 'custom':
+                # 自定义格式：使用 DictReader 解析
+                row_dict = dict(zip(headings, data[j]))
+                sample_id = row_dict[id_column].strip()
+                target_value = float(row_dict[target_column])
+                crys_desc_full = row_dict.get(text_column, f"Crystal structure {sample_id}")
             else:
-                text_desc = f"Crystal structure {sample_id}"
+                raise ValueError(f"Unsupported dataset: {dataset}")
+
+            # 标准化文本描述
+            text_desc = normalize_text(crys_desc_full)
 
             # CIF文件路径
             cif_file = os.path.join(cif_dir, f"{sample_id}.cif")
@@ -198,20 +295,24 @@ def load_dataset_from_cif_csv(cif_dir, csv_file, target_column='target',
             # 加载结构
             atoms = Atoms.from_cif(cif_file)
 
-            # 构建样本
+            # 构建样本（与 train_with_cross_modal_attention.py 一致）
             sample = {
                 "atoms": atoms.to_dict(),
                 "jid": sample_id,
-                "target": target_value,
-                "text_description": text_desc
+                "text": text_desc,  # 使用 "text" 而不是 "text_description"
+                "target": float(target_value)
             }
+
+            # MP数据集的特殊处理（对数变换）
+            if dataset.lower() == 'mp' and property_name in ['shear', 'bulk', 'bulk_modulus', 'shear_modulus']:
+                sample["target"] = np.log10(float(target_value))
 
             dataset_array.append(sample)
 
         except Exception as e:
             skipped += 1
             if len(errors) < 5:
-                errors.append(f"样本 {sample_id}: {str(e)}")
+                errors.append(f"样本 {j}: {str(e)}")
 
     # 打印统计
     print(f"\n✅ 成功加载: {len(dataset_array)} 样本")
@@ -357,11 +458,20 @@ def get_parser():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    # 数据路径
-    parser.add_argument('--cif_dir', type=str, required=True,
-                       help='CIF文件目录路径')
-    parser.add_argument('--csv_file', type=str, required=True,
-                       help='CSV描述文件路径')
+    # ========== 数据集路径参数（照抄 train_with_cross_modal_attention.py）==========
+    parser.add_argument('--root_dir', type=str, default='../dataset/',
+                       help='数据集根目录（相对于当前目录或绝对路径）')
+    parser.add_argument('--dataset', type=str, default='custom',
+                       choices=['jarvis', 'mp', 'class', 'toy', 'custom'],
+                       help='数据集名称: jarvis, mp, class (分类), toy, custom (自定义)')
+    parser.add_argument('--property', type=str, default='formation_energy',
+                       help='预测的性质 (回归: formation_energy, band_gap; 分类: syn, metal_oxide等)')
+
+    # ========== 自定义数据路径（当 dataset=custom 时使用）==========
+    parser.add_argument('--cif_dir', type=str, default=None,
+                       help='CIF文件目录路径（当dataset=custom时必需）')
+    parser.add_argument('--csv_file', type=str, default=None,
+                       help='CSV描述文件路径（当dataset=custom时必需）')
     parser.add_argument('--target_column', type=str, default='target',
                        help='CSV中目标值列名')
     parser.add_argument('--text_column', type=str, default='text_description',
@@ -473,16 +583,35 @@ def main():
     print("\n" + "="*80)
     print("🚀 本地CIF+CSV数据训练")
     print("="*80)
+    print(f"数据集: {args.dataset}")
+    print(f"属性: {args.property}")
     print(f"模型: {args.model.upper()}")
-    print(f"CIF目录: {args.cif_dir}")
-    print(f"CSV文件: {args.csv_file}")
     print(f"输出目录: {args.output_dir}")
     print("="*80 + "\n")
 
-    # 1. 加载数据集
+    # 1. 确定数据路径（照抄 train_with_cross_modal_attention.py 的方式）
+    if args.dataset == 'custom':
+        # 自定义数据集：需要用户提供路径
+        if args.cif_dir is None or args.csv_file is None:
+            raise ValueError(
+                "使用 custom 数据集时，必须提供 --cif_dir 和 --csv_file 参数\n"
+                "示例: python train_local_cif_csv.py --dataset custom --cif_dir ./cifs/ --csv_file ./data.csv"
+            )
+        cif_dir = args.cif_dir
+        csv_file = args.csv_file
+    else:
+        # 标准数据集（jarvis, mp, class, toy）：使用 get_dataset_paths
+        cif_dir, csv_file = get_dataset_paths(args.root_dir, args.dataset, args.property)
+        print(f"📂 使用标准数据集路径:")
+        print(f"   CIF目录: {cif_dir}")
+        print(f"   CSV文件: {csv_file}\n")
+
+    # 2. 加载数据集
     dataset_array = load_dataset_from_cif_csv(
-        cif_dir=args.cif_dir,
-        csv_file=args.csv_file,
+        cif_dir=cif_dir,
+        csv_file=csv_file,
+        dataset=args.dataset,
+        property_name=args.property,
         target_column=args.target_column,
         text_column=args.text_column,
         id_column=args.id_column

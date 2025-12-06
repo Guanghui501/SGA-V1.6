@@ -2,6 +2,20 @@
 
 本指南说明如何使用 `train_local_cif_csv.py` 训练模型，该脚本支持 **CIF文件目录 + CSV元数据** 的数据格式。
 
+**✨ 新功能**: 现已支持标准数据集（JARVIS, Material Project, 分类数据集等），完全照抄 `train_with_cross_modal_attention.py` 的数据处理方式！
+
+---
+
+## 🎯 支持的数据集类型
+
+`train_local_cif_csv.py` 支持以下数据集：
+
+1. **JARVIS-DFT**: JARVIS 数据库的标准格式
+2. **Material Project (MP)**: MP 数据库格式
+3. **Class**: 分类任务数据集
+4. **Toy**: 玩具/测试数据集
+5. **Custom**: 自定义数据集（原有功能）
+
 ---
 
 ## 📂 数据格式
@@ -26,23 +40,37 @@ my_project/
   - 例如: CSV 中的 `id=sample_001` 对应文件 `sample_001.cif`
 - **内容**: 包含晶体结构的晶格参数、原子坐标、元素类型等信息
 
-### CSV 文件格式
+### CSV 文件格式（按数据集类型）
 
-#### 必需列
+#### 标准数据集格式
 
-| 列名 | 类型 | 说明 | 示例 |
+不同数据集有不同的 CSV 格式（与 `train_with_cross_modal_attention.py` 完全一致）：
+
+| 数据集 | CSV 列顺序 | 示例 |
+|--------|-----------|------|
+| **JARVIS** | `Id, Composition, prop, Description, File_Name` | `0, VSe2, 0.0, "VSe2 trigonal...", desc_mbj_bandgap0.csv` |
+| **MP (formation_energy)** | `id, composition, formation_energy, band_gap, description, file_name` | `mp-1234, Fe2O3, -3.45, 2.1, "Iron oxide...", mat_text.csv` |
+| **MP (band_gap)** | `id, composition, formation_energy, band_gap, description, file_name` | （band_gap 在第4列） |
+| **Class** | `id, target, description` | `sample_001, 0, "Metal with BCC structure"` |
+| **Toy** | 同 JARVIS | 用于测试 |
+
+#### 自定义数据集格式（Custom）
+
+对于自定义数据集，可以通过参数指定列名：
+
+**必需列**:
+| 列名（默认） | 类型 | 说明 | 示例 |
 |------|------|------|------|
 | `id` | 字符串 | 样本唯一标识符，对应CIF文件名 | `sample_001` |
 | `target` | 浮点数 | 目标属性值（回归任务） | `-3.456` |
 
-#### 可选列
-
-| 列名 | 类型 | 说明 | 示例 |
+**可选列**:
+| 列名（默认） | 类型 | 说明 | 示例 |
 |------|------|------|------|
 | `text_description` | 字符串 | 材料文本描述（用于多模态学习） | `Perovskite structure with high conductivity` |
 | `composition` | 字符串 | 化学式 | `Ca2MnO4` |
 
-#### CSV 示例（回归任务）
+#### CSV 示例（自定义格式）
 
 ```csv
 id,target,text_description,composition
@@ -66,7 +94,38 @@ sample_003,2,Insulator with perovskite structure
 
 ## 🚀 快速开始
 
-### 步骤 1: 准备数据
+### 方式 1: 使用标准数据集（JARVIS/MP/Class）
+
+```bash
+# JARVIS 数据集 - 形成能预测
+python train_local_cif_csv.py \
+    --root_dir ../dataset/ \
+    --dataset jarvis \
+    --property formation_energy \
+    --model densegnn \
+    --use_middle_fusion \
+    --use_cross_modal
+
+# Material Project 数据集 - 带隙预测
+python train_local_cif_csv.py \
+    --root_dir ../dataset/ \
+    --dataset mp \
+    --property band_gap \
+    --model densegnn \
+    --use_cross_modal
+
+# 分类数据集
+python train_local_cif_csv.py \
+    --root_dir ../dataset/ \
+    --dataset class \
+    --property syn \
+    --classification \
+    --num_classes 2
+```
+
+### 方式 2: 使用自定义数据集
+
+#### 步骤 1: 准备数据
 
 ```bash
 # 确保数据结构正确
@@ -77,10 +136,11 @@ head -5 data.csv
 # 输出: CSV文件前5行
 ```
 
-### 步骤 2: 基础训练（回归）
+#### 步骤 2: 基础训练（回归）
 
 ```bash
 python train_local_cif_csv.py \
+    --dataset custom \
     --cif_dir ./structures/ \
     --csv_file ./data.csv \
     --output_dir ./results/
@@ -102,10 +162,27 @@ ls results/
 
 ## ⚙️ 配置选项
 
-### 数据参数
+### 数据集参数
+
+#### 标准数据集（JARVIS/MP/Class/Toy）
 
 ```bash
 python train_local_cif_csv.py \
+    --root_dir ../dataset/            # 数据集根目录
+    --dataset jarvis                  # 数据集类型: jarvis, mp, class, toy
+    --property formation_energy       # 预测属性
+```
+
+**支持的属性**:
+- **JARVIS**: `formation_energy`, `mbj_bandgap`, `opt_bandgap`, `bulk_modulus`, `shear_modulus`, 等
+- **MP**: `formation_energy`, `band_gap`, `bulk`, `shear`
+- **Class**: 根据具体分类任务，如 `syn`, `metal_oxide` 等
+
+#### 自定义数据集（Custom）
+
+```bash
+python train_local_cif_csv.py \
+    --dataset custom \
     --cif_dir ./structures/           # CIF文件目录
     --csv_file ./data.csv             # CSV元数据文件
     --id_column id                    # CSV中ID列名（默认: id）
