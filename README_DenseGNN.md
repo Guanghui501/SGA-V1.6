@@ -71,7 +71,14 @@ python your_training_script.py --config config_densegnn_example.json
 - `output_features`: 输出特征维度（默认：1）
 - `graph_dropout`: Dropout 比率（默认：0.0）
 
-#### 跨模态注意力参数
+#### 中期融合参数（Middle Fusion）
+- `use_middle_fusion`: 是否使用中期融合（默认：False）
+- `middle_fusion_layers`: 在哪些层应用融合，逗号分隔（默认："1,3"）
+- `middle_fusion_hidden_dim`: 融合隐藏维度（默认：128）
+- `middle_fusion_num_heads`: 注意力头数（默认：2）
+- `middle_fusion_dropout`: 融合 Dropout（默认：0.1）
+
+#### 跨模态注意力参数（Late Fusion）
 - `use_cross_modal_attention`: 是否使用跨模态注意力（默认：False）
 - `cross_modal_hidden_dim`: 注意力隐藏维度（默认：256）
 - `cross_modal_num_heads`: 注意力头数（默认：4）
@@ -124,6 +131,19 @@ class DenseGNNConv(nn.Module):
 
 ### 多模态融合
 
+DenseGNN 支持**两种融合策略**，可以单独使用或组合使用：
+
+#### 1. 中期融合（Middle Fusion）
+在图卷积的中间层注入文本信息：
+1. **文本编码**：MatSciBERT → CLS token → Projection Head
+2. **图卷积**：在指定层（如第1层和第3层）：
+   - DenseGNN 卷积更新节点特征
+   - **门控融合**：将文本特征通过门控机制融合到节点特征中
+   - 继续后续卷积
+3. 优势：文本信息早期融入，影响后续所有层的表示学习
+
+#### 2. 晚期融合（Late Fusion - Cross-Modal Attention）
+在图池化后进行全局融合：
 1. **文本编码**：MatSciBERT → CLS token → Projection Head
 2. **图编码**：DenseGNN layers → Pooling → Projection Head
 3. **跨模态注意力**：
@@ -131,6 +151,16 @@ class DenseGNNConv(nn.Module):
    - 文本特征 attend to 图特征
 4. **融合**：平均或拼接
 5. **预测**：MLP → 输出
+
+#### 3. 组合策略（推荐）
+可以同时使用中期融合和晚期融合：
+```python
+model_config = DenseGNNConfig(
+    use_middle_fusion=True,        # 在第1、3层注入文本
+    middle_fusion_layers="1,3",
+    use_cross_modal_attention=True  # 最后进行全局注意力融合
+)
+```
 
 ## 训练建议
 

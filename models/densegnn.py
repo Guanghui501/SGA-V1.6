@@ -84,6 +84,92 @@ class ContrastiveLoss(nn.Module):
         return (loss_g2t + loss_t2g) / 2
 
 
+class MiddleFusionModule(nn.Module):
+    """Middle fusion module for injecting text features into graph convolution layers.
+
+    This module applies gated fusion to combine node features with text features
+    at intermediate layers during graph convolution.
+    """
+    def __init__(self, node_dim=256, text_dim=64, hidden_dim=128, num_heads=2, dropout=0.1):
+        """Initialize middle fusion module.
+
+        Args:
+            node_dim: Dimension of graph node features
+            text_dim: Dimension of text features
+            hidden_dim: Hidden dimension for fusion
+            num_heads: Number of attention heads (for future compatibility)
+            dropout: Dropout rate
+        """
+        super().__init__()
+        self.node_dim = node_dim
+        self.text_dim = text_dim
+        self.hidden_dim = hidden_dim
+
+        # Text transformation
+        self.text_transform = nn.Sequential(
+            nn.Linear(text_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, node_dim)
+        )
+
+        # Gate mechanism to control text influence
+        self.gate = nn.Sequential(
+            nn.Linear(node_dim + node_dim, node_dim),
+            nn.Sigmoid()
+        )
+
+        self.layer_norm = nn.LayerNorm(node_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, node_feat, text_feat, batch_num_nodes=None):
+        """Apply middle fusion using gated mechanism.
+
+        Args:
+            node_feat: Node features [total_nodes, node_dim] (for batched graphs)
+                      or [batch_size, node_dim] (for pooled features)
+            text_feat: Text features [batch_size, text_dim]
+            batch_num_nodes: List of number of nodes in each graph (optional)
+
+        Returns:
+            Enhanced node features with same shape as input
+        """
+        batch_size = text_feat.size(0)
+        num_nodes = node_feat.size(0)
+
+        # Transform text features
+        text_transformed = self.text_transform(text_feat)  # [batch_size, node_dim]
+
+        # Case 1: Batched graphs (total_nodes != batch_size)
+        if num_nodes != batch_size:
+            # Broadcast text features to all nodes
+            if batch_num_nodes is not None:
+                # Use provided batch information
+                text_expanded = []
+                for i, num in enumerate(batch_num_nodes):
+                    text_expanded.append(text_transformed[i].unsqueeze(0).repeat(num, 1))
+                text_broadcasted = torch.cat(text_expanded, dim=0)  # [total_nodes, node_dim]
+            else:
+                # Fallback: use average pooling of text and broadcast
+                text_pooled = text_transformed.mean(dim=0, keepdim=True)  # [1, node_dim]
+                text_broadcasted = text_pooled.repeat(num_nodes, 1)  # [total_nodes, node_dim]
+
+        # Case 2: Already pooled features (one per graph)
+        else:
+            text_broadcasted = text_transformed  # [batch_size, node_dim]
+
+        # Gated fusion
+        gate_input = torch.cat([node_feat, text_broadcasted], dim=-1)  # [*, node_dim*2]
+        gate_values = self.gate(gate_input)  # [*, node_dim]
+
+        # Apply gating and residual connection
+        enhanced = node_feat + gate_values * text_broadcasted
+        enhanced = self.layer_norm(enhanced)
+        enhanced = self.dropout(enhanced)
+
+        return enhanced
+
+
 class CrossModalAttention(nn.Module):
     """Cross-modal attention between graph and text features."""
     def __init__(self, graph_dim=256, text_dim=64, hidden_dim=256, num_heads=4, dropout=0.1):
@@ -265,7 +351,14 @@ class DenseGNNConfig(BaseSettings):
     output_features: int = 1
     graph_dropout: float = 0.0
 
-    # Cross-modal attention settings
+    # Middle fusion settings (text injection into graph layers)
+    use_middle_fusion: bool = False
+    middle_fusion_layers: str = "1,3"  # Comma-separated layer indices
+    middle_fusion_hidden_dim: int = 128
+    middle_fusion_num_heads: int = 2
+    middle_fusion_dropout: float = 0.1
+
+    # Cross-modal attention settings (late fusion)
     use_cross_modal_attention: bool = False
     cross_modal_hidden_dim: int = 256
     cross_modal_num_heads: int = 4
@@ -321,7 +414,23 @@ class DenseGNN(nn.Module):
         self.graph_projection = ProjectionHead(embedding_dim=config.hidden_features)
         self.text_projection = ProjectionHead(embedding_dim=768)
 
-        # Cross-modal attention
+        # Middle fusion modules (text injection into graph layers)
+        self.use_middle_fusion = config.use_middle_fusion
+        self.middle_fusion_modules = nn.ModuleDict()
+        if self.use_middle_fusion:
+            # Parse middle_fusion_layers string to get layer indices
+            fusion_layers = [int(x.strip()) for x in config.middle_fusion_layers.split(',')]
+            for layer_idx in fusion_layers:
+                self.middle_fusion_modules[f'layer_{layer_idx}'] = MiddleFusionModule(
+                    node_dim=config.hidden_features,
+                    text_dim=64,  # After text_projection
+                    hidden_dim=config.middle_fusion_hidden_dim,
+                    num_heads=config.middle_fusion_num_heads,
+                    dropout=config.middle_fusion_dropout
+                )
+            self.middle_fusion_layer_indices = fusion_layers
+
+        # Cross-modal attention (late fusion)
         self.use_cross_modal_attention = config.use_cross_modal_attention
         if self.use_cross_modal_attention:
             self.cross_modal_attention = CrossModalAttention(
@@ -398,9 +507,15 @@ class DenseGNN(nn.Module):
         bondlength = torch.norm(g.edata.pop("r"), dim=1)
         y = self.edge_embedding(bondlength)
 
-        # DenseGNN updates
-        for layer in self.densegnn_layers:
+        # DenseGNN updates with middle fusion
+        for idx, layer in enumerate(self.densegnn_layers):
             x, y = layer(g, x, y)
+
+            # Apply middle fusion if configured for this layer
+            if self.use_middle_fusion and text_emb is not None and idx in self.middle_fusion_layer_indices:
+                # Get batch information for proper text broadcasting
+                batch_num_nodes = g.batch_num_nodes().tolist()
+                x = self.middle_fusion_modules[f'layer_{idx}'](x, text_emb, batch_num_nodes)
 
         # Graph-level pooling
         graph_emb = self.readout(g, x)
