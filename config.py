@@ -16,6 +16,7 @@ from models.alignn import ALIGNNConfig
 from models.dense_alignn import DenseALIGNNConfig
 from models.alignn_cgcnn import ACGCNNConfig
 from models.alignn_layernorm import ALIGNNConfig as ALIGNN_LN_Config
+from models.densegnn import DenseGNNConfig
 
 # from typing import List
 
@@ -216,8 +217,10 @@ class TrainingConfig(BaseSettings):
         ALIGNN_LN_Config,
         DenseALIGNNConfig,
         ACGCNNConfig,
+        DenseGNNConfig,
     ] = ALIGNNConfig(name="alignn")
     # ] = CGCNNConfig(name="cgcnn")
+    # ] = DenseGNNConfig(name="densegnn")  # Use DenseGNN instead of ALIGNN
 
     @root_validator()
     def set_input_size(cls, values):

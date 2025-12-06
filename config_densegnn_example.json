@@ -1,0 +1,54 @@
+{
+  "dataset": "dft_3d",
+  "target": "formation_energy_peratom",
+  "atom_features": "cgcnn",
+  "neighbor_strategy": "k-nearest",
+  "id_tag": "jid",
+
+  "random_seed": 123,
+  "classification_threshold": null,
+  "n_val": null,
+  "n_test": null,
+  "n_train": null,
+  "train_ratio": 0.8,
+  "val_ratio": 0.1,
+  "test_ratio": 0.1,
+
+  "epochs": 300,
+  "batch_size": 64,
+  "weight_decay": 0.0,
+  "learning_rate": 0.001,
+  "optimizer": "adamw",
+  "scheduler": "onecycle",
+  "criterion": "mse",
+
+  "n_early_stopping": 50,
+  "output_dir": "./results_densegnn",
+
+  "cutoff": 8.0,
+  "max_neighbors": 12,
+  "num_workers": 4,
+
+  "model": {
+    "name": "densegnn",
+    "densegnn_layers": 4,
+    "atom_input_features": 92,
+    "edge_input_features": 80,
+    "embedding_features": 64,
+    "hidden_features": 256,
+    "output_features": 1,
+    "graph_dropout": 0.0,
+
+    "use_cross_modal_attention": true,
+    "cross_modal_hidden_dim": 256,
+    "cross_modal_num_heads": 4,
+    "cross_modal_dropout": 0.1,
+
+    "use_contrastive_loss": false,
+    "contrastive_temperature": 0.1,
+    "contrastive_loss_weight": 0.1,
+
+    "link": "identity",
+    "classification": false
+  }
+}

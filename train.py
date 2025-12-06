@@ -45,6 +45,7 @@ from torch import nn
 from data import get_train_val_loaders
 from config import TrainingConfig
 from models.alignn import ALIGNN
+from models.densegnn import DenseGNN
 from jarvis.db.jsonutils import dumpjson
 import json
 import os
@@ -188,7 +189,10 @@ def train_dgl(config: Union[TrainingConfig, Dict[str, Any]], model: nn.Module = 
         config.model.classification = True
 
     # define network, optimizer, scheduler
-    _model = {"alignn": ALIGNN}
+    _model = {
+        "alignn": ALIGNN,
+        "densegnn": DenseGNN
+    }
     if model is None:
         net = _model.get(config.model.name)(config.model)
     else:
