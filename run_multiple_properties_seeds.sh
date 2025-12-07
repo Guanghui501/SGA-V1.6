@@ -78,8 +78,11 @@ for PROPERTY in "${PROPERTIES[@]}"; do
         echo "使用以下命令查看进度:"
         echo "  tail -f $LOG_FILE"
 
-        # 等待几秒钟，避免同时启动太多任务
-        sleep 5
+        # 等待当前任务完成后再启动下一个（串行执行）
+        echo "等待任务完成..."
+        wait $TASK_PID
+        echo "任务完成！退出码: $?"
+        echo ""
     done
 done
 
