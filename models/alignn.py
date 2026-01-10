@@ -407,6 +407,45 @@ class FineGrainedCrossModalAttention(nn.Module):
 
         self.scale = self.head_dim ** -0.5
 
+        # Position embeddings for atoms (to distinguish different positions)
+        self.atom_position_embedding = nn.Embedding(200, hidden_dim if use_projection else node_dim)
+
+        # Initialize weights to prevent attention collapse
+        self._init_weights()
+
+    def _init_weights(self):
+        """Xavier initialization for better attention stability.
+
+        Uses Xavier uniform initialization for query, key, value projections
+        and small gain (0.1) for output projections to let residual connections dominate.
+        """
+        # Xavier init for query, key, value projections
+        for module in [self.a2t_query, self.a2t_key, self.a2t_value,
+                       self.t2a_query, self.t2a_key, self.t2a_value]:
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+        # Small initialization for output projections (let residual connection dominate)
+        nn.init.xavier_uniform_(self.node_output.weight, gain=0.1)
+        nn.init.xavier_uniform_(self.token_output.weight, gain=0.1)
+        if self.node_output.bias is not None:
+            nn.init.zeros_(self.node_output.bias)
+        if self.token_output.bias is not None:
+            nn.init.zeros_(self.token_output.bias)
+
+        # Initialize input projections if they exist
+        if self.use_projection:
+            nn.init.xavier_uniform_(self.node_proj_in.weight)
+            nn.init.xavier_uniform_(self.token_proj_in.weight)
+            if self.node_proj_in.bias is not None:
+                nn.init.zeros_(self.node_proj_in.bias)
+            if self.token_proj_in.bias is not None:
+                nn.init.zeros_(self.token_proj_in.bias)
+
+        # Initialize position embeddings
+        nn.init.normal_(self.atom_position_embedding.weight, mean=0.0, std=0.02)
+
     def split_heads(self, x):
         """Split the last dimension into (num_heads, head_dim).
 
@@ -447,6 +486,11 @@ class FineGrainedCrossModalAttention(nn.Module):
         if self.use_projection:
             node_feat = self.node_proj_in(node_feat)  # [batch, num_atoms, hidden]
             token_feat = self.token_proj_in(token_feat)  # [batch, seq_len, hidden]
+
+        # Add positional encoding to atoms (key fix for distinguishing atom positions)
+        positions = torch.arange(num_atoms, device=node_feat.device).unsqueeze(0).expand(batch_size, -1)
+        position_encoding = self.atom_position_embedding(positions)  # [batch, num_atoms, hidden/node_dim]
+        node_feat = node_feat + position_encoding
 
         attention_weights = {} if return_attention else None
 
